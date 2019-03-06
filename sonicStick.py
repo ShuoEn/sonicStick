@@ -1,5 +1,6 @@
 #!/usr/bin/python
 from package.modbus.ModbusClient import *
+import os
 import time
 import OSC
 import _thread,threading
@@ -11,12 +12,11 @@ import argparse
 import commands
 from package.sqliteModule import *
 import ctypes
-
-#from IPython import embed
+from IPython import embed
 class SonicStick():
     def __init__(self):
         self.safe=False
-        self.queue_mutex=threading.Lock()
+        #self.queue_mutex=threading.Lock()
         self.prQueue=PrQueue()
         self.ID_init()
         self.nowwho=1
@@ -26,14 +26,16 @@ class SonicStick():
         self.modbus_init()
         self.artnet_init()
         self.OSC_init()
-        
+        # ex_alarm: modbus no response, tilted、partner alarm、partner dead
+        self.status={'mode':'controled','alarm':0,'ex_alarm':0,'position':-999,'home':'homed'}
+
         # functions queue
         
     def __del__(self):
         try:
             self.modbusClient.close()
             self.sock.close()
-            self.server.close()
+            self.OSCrec.close()
         except:
             pass
     def modbus_init(self): 
@@ -57,9 +59,10 @@ class SonicStick():
         speedee = (6500/howmanylevel)
         accee = (18000/howmanylevel)
         for ii in range(0,howmanylevel):
-            self.posdmx[howmanylevel-ii-1] = int(ii * dividee)
+            #self.posdmx[howmanylevel-ii-1] = int(ii * dividee)
+            self.posdmx[ii] = int(ii * dividee)
             self.spddmx[ii] = int(ii * speedee) + 2500
-            self.accdmx[ii] = 21000 - int(ii * accee )
+            self.accdmx[ii] = int(ii * accee )
         for ii in range(0,howmanylevel):
             #print (self.posdmx[ii])
             pass
@@ -84,12 +87,24 @@ class SonicStick():
         # get from server first or using local lookup table
         pass
     def OSC_init(self):
-        self.server = OSC.OSCServer( ("0.0.0.0", 7730) )
-        self.server.timeout = 0.05
-        self.server.addMsgHandler( "/motor", self.user_callback )
-        self.server.addMsgHandler( "/stop", self.stop_callback )
-        self.server.addMsgHandler( "/lastpos", self.pos_sync_callback )
-        _thread.start_new_thread(self.server.serve_forever,())
+        self.OSCrec = OSC.OSCServer( ("0.0.0.0", 7730) )
+        self.OSCrec.timeout = 0.05
+        self.OSCrec.addMsgHandler( "/motor", self.user_callback )
+        self.OSCrec.addMsgHandler( "/stop", self.stop_callback )
+        self.OSCrec.addMsgHandler( "/lastpos", self.pos_sync_callback )
+        self.OSCrec.addMsgHandler( "/mode", self.mode_callback ) # 
+        _thread.start_new_thread(self.OSCrec.serve_forever,())
+
+    def mode_callback(self, path, tags, args, source):
+        if args[0]=='autorun':
+            self.status['mode']=args[0]
+
+        elif args[0]=='controled': # stop, clear buffer
+            self.status['mode']=args[0]
+            stop_callback()
+        else:
+
+
     # def socket_to_partner(self):
     #     self.socket_partner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     #     if(self.ID%2==0): # slave
@@ -97,6 +112,11 @@ class SonicStick():
 
     def pos_sync_callback(self, path, tags, args, source):
         self.partnerPos=args[0]
+
+    def stop_callback(self, path, tags, args, source):
+        #print "stop", args[0]
+        self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
+        prQueue.reset()
 
     #thread mutex? have done in ModbusClient module
     def send_pos(self):
@@ -115,10 +135,14 @@ class SonicStick():
         while True:
             current_pos=self.read_current_pos()
             DbObj.update_position(current_pos)
+            holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x050E, 1,1)
+            print('current Pr:'+str(holdingRegisters[0]))
             time.sleep(0.7)
-    def save_pos_to_db_once(self):
-        current_pos=self.read_current_pos()
+    def save_pos_to_db_once(self,current_pos=None):
+        if current_pos==None:
+            current_pos=self.read_current_pos()
         self.DbObj.update_position(current_pos)
+
     def send_data_to_partner(self,node,data):
         partner = OSC.OSCClient()
         partner.connect((self.partner, 7730))   # localhost, port 57120
@@ -133,27 +157,46 @@ class SonicStick():
         oscmsg.setAddress("/"+node)
         oscmsg.append(data)
         partner.send(oscmsg)
-    def readInput(self):
-        holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0204, 1) #holdingRegisters = ConvertRegistersToFloat(self.modbusClient.ReadHoldingRegisters(2304, 1))
-        try:
-            if(len(holdingRegisters)):
-                if(833 == holdingRegisters[0]):
-                    holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0024, 2, holdingRegisters[1]) #holdingRegisters = ConvertRegistersToFloat(self.modbusClient.ReadHoldingRegisters(2304, 1))
-                    pos = self.posdmx[0] - (holdingRegisters[1] << 16) + holdingRegisters[0]
-                    print pos
-                    click( holdingRegisters[2], math.ceil( float(pos) / self.posdmx[0] * 127 ) )
+    # self.status={'mode':'controled','alarm':0,'ex_alarm':0,'position':-999,'home':'homed'}
+    # self.status['ex_alarm'] = 
+    #   1               |    2  |       4      |    8
+    # modbus no response| tilted| partner alarm| partner dead
+    def sendStatus(self):
+        str_mapping={'controled':0,'autorun':1,'not_homed':0,'homed':1}
+        while True:
+            alarm=self.readAlarm()
+            if readAlarm!=None:
+                self.status['alarm']=alarm
+                self.status['ex_alarm']=self.status['ex_alarm']&(~1) # clear modbus no response bit
             else:
-                #pass
-                print (unit)
-        except IndexError, e:
-            pass
-
+                status=[self.ID,1,0]
+                alarm=0
+                self.status['ex_alarm']=self.status['ex_alarm']|1
+            # blob_data = ID mode alarm ex_alarm position homeStatus
+            blob_data=[self.ID,str_mapping[self.status['mode']],self.status['alarm'],self.status['ex_alarm'],self.status['position'],str_mapping[self.status['home']]]
+            send_data_to_partner('status',blob_data)
+            send_data_to_server('status',blob_data)
+            time.sleep(1)
+        # id alarm 
     # Read position of last time ,then set software endstop
+    def readAlarm(self):
+        try:
+            holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0002, 2,1) # read alarm
+            alarm=ConvertRegistersToDouble(holdingRegisters)
+            return alarm
+        except Exception,err:
+            print('readAlarm err:')
+            traceback.print_exc() 
+            return None
+    def clearAlarm(self):
+        self.modbusClient.WriteSingleRegister(0x0002, 0,1) 
+
     def home(self):
         if(self.safe==False):
             print('not to home')
             return
         sync=self.partnerHomeSync()
+        #sync=True
         if not sync:
             print('home SYNC failure, not to home')
             return
@@ -171,7 +214,7 @@ class SonicStick():
                 print('touch soft endstop')
                 self.modbusClient.WriteSingleRegister(0x030C, 0xE0, 1) # Enable manual DI setting
                 self.modbusClient.WriteSingleRegister(0x040E, 0xE1, 1) # Manual touch endstop
-                self.modbusClient.WriteSingleRegister(0x030C, 0x00, 1) # Enable manual DI setting
+                self.modbusClient.WriteSingleRegister(0x030C, 0x00, 1) # Disable manual DI setting
                 self.set_max_PUU(2147483647,-2147483648)
                 return
             if homeState:
@@ -197,11 +240,11 @@ class SonicStick():
                         s.close()
                         return True
                 except (KeyboardInterrupt, SystemExit):
-
+                    self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
                     raise
                 except:
                     #traceback.print_exc()
-                    print('partner still sleep')
+                    print(self.partner+':'+str(PORT)+'partner still sleep')
                 time.sleep(0.5)
         else:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -231,19 +274,10 @@ class SonicStick():
     # partner
     #  
     def safetyCheck(self):
-        self.lastpos=self.DbObj.read_last_pos()
-
-        if self.lastpos==None:
-            self.safe=False
-            print('safety checking failure, couldn\'t read last position')
-            return False
-        else:
-            print('Read from DB, last position:'+str(self.lastpos)) 
-            self.set_max_PUU(2147483647,-self.lastpos) # Max PUU
         # check server and partner
-        while False:#True: remember to fix back
+        while True: #remember to fix back
             partnerRUOK=checkHostAlive(self.partner)
-            if(checkHostAlive(server) and partnerRUOK):
+            if(checkHostAlive(self.server) and partnerRUOK):
                 self.safe=True
                 return False
             else:
@@ -251,47 +285,41 @@ class SonicStick():
                 self.modbusClient.WriteSingleRegister(0x050E, 1000, 1) # Stop motor
                 break
             time.sleep(5)
-        while False: # check modbus responses
-            if(self.read_current_pos()==None):
-                print('safety check failure: No modbus responses')
-            else:
-                break
+        # check modbus responses
+        if(self.read_current_pos()==None):
+            print('safety check failure: No modbus responses')
+        else:
+            return False
+
         print('safety pass')
         self.safe=True
         return True
-    def stop_callback(self, path, tags, args, source):
-        print "stop", args[0]
-        self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
-        
-    # def moveMotor(self, howmany, speed, acc):
-    #     print('move')
-    #     motordistance = self.posdmx[howmany] #1000000
-    #     speed=int(round(speed/16.0))
-    #     acc=int(round(acc/16.0))
-    #     # setting_val=0x00000023 | (acc<<8) |(acc<<12)|(speed<<16)
-    #     # self.modbusClient.WriteMultipleRegisters(self.prQueue.nextPrSettingAddr, [motordistance & 0xFFFF, motordistance >> 16],1)
-    #     # time.sleep(0.025)
-    #     print('addr='+str(self.prQueue.nextPrPathAddr)+' x='+str(motordistance))
-    #     self.modbusClient.WriteMultipleRegisters(self.prQueue.nextPrPathAddr, [motordistance & 0xFFFF, motordistance >> 16],1)
-    #     time.sleep(0.025)
-    def moveMotor(self, howmany, speed, acc,Praddr):
-        print('move')
+    
+
+    def moveMotor(self, howmany, speed, acc,Praddr,PrNum):
+        print('-------------move to--------------')
+        print('howmany='+str(howmany)+' pos='+str(self.posdmx[howmany]))
         motordistance = self.posdmx[howmany] #1000000
-        speed=int(round(speed/16.0))
-        acc=int(round(acc/16.0))
+        speed=int(round(speed/16.0))-1
+        acc=int(round(acc/16.0))-1
         # setting_val=0x00000023 | (acc<<8) |(acc<<12)|(speed<<16)
         # self.modbusClient.WriteMultipleRegisters(self.prQueue.nextPrSettingAddr, [motordistance & 0xFFFF, motordistance >> 16],1)
         # time.sleep(0.025)
-        print('Pr_Addr='+str(hex(Praddr))+' x='+str(motordistance))
+        speedPr=0x00000032|(speed<<16)|(acc<<12)|(acc<<8) # speed + acc
+        
+        print('Pr_Addr='+str(hex(Praddr))+' x='+str(motordistance)+' speedPr='+str(hex(speedPr)))
+        
+        self.modbusClient.WriteMultipleRegisters(Praddr-2, [speedPr & 0xFFFF, speedPr >> 16],1) # Define Pr1~Pr49
         self.modbusClient.WriteMultipleRegisters(Praddr, [motordistance & 0xFFFF, motordistance >> 16],1)
-        time.sleep(0.025)
+        self.modbusClient.WriteSingleRegister(0x050E, PrNum, 1)
+        #time.sleep(0.025)
     def set_acc(self,row,acc):
-        print('set speed')
-        if(row>15 or row <0 or acc==0):
+        print('set acc')
+        if(row>16 or row <0 or acc==0):
             return
         if(acc>65500):
             acc=65500
-        addr=0x0528+row*4
+        addr=0x0528+row*2
         self.modbusClient.WriteMultipleRegisters(addr, [acc & 0xFFFF, acc >> 16],1)
         time.sleep(0.025)
     def set_speed(self,row,speed):
@@ -300,7 +328,8 @@ class SonicStick():
             return
         if(speed>65500):
             speed=65500
-        addr=0x0578+row*4
+        addr=0x0578+row*2
+        speed=speed*10
         self.modbusClient.WriteMultipleRegisters(addr, [speed & 0xFFFF, speed >> 16],1)
         time.sleep(0.025)
     def set_max_PUU(self,positivePUU,negtivePUU):
@@ -308,26 +337,6 @@ class SonicStick():
         positivePUU=int32(positivePUU)
         self.modbusClient.WriteMultipleRegisters(0x0510, [positivePUU & 0xFFFF, positivePUU >> 16],1)
         self.modbusClient.WriteMultipleRegisters(0x0512, [negtivePUU & 0xFFFF, negtivePUU >> 16],1)
-    def JogMotor(self, unit, JogWhat):
-        
-        self.modbusClient.UnitIdentifier = unit
-        holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0900, 1) #holdingRegisters = ConvertRegistersToFloat(self.modbusClient.ReadHoldingRegisters(2304, 1))
-        print (holdingRegisters)
-
-        if holdingRegisters[0] == 0x0ff0:
-            #self.modbusClient.WriteSingleRegister(0x0901, 0, unit)
-            
-            self.modbusClient.WriteSingleRegister(0x0901, 3, unit)
-            self.modbusClient.WriteSingleRegister(0x0902, 1000, unit)
-            self.modbusClient.WriteSingleRegister(0x0903, 20, unit)
-            #print ("{:04x}".format(abs(howmany) >> 16))
-            self.modbusClient.WriteSingleRegister(0x0904, JogWhat, unit)
-            holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0024, 2) #holdingRegisters = ConvertRegistersToFloat(self.modbusClient.ReadHoldingRegisters(2304, 1))
-            #print (holdingRegisters)
-            
-        else:
-            print ("something wrong")
-
     def artnet_handler(self, socket,fortuple):
         print('artnet_handler')
         lastpos = 0
@@ -355,11 +364,13 @@ class SonicStick():
                         #print "seq %d phy %d sub_net %d uni %d net %d len %d" % \
                         #(sequence, physical, sub_net, universe, net, rgb_length)
                         idx = 18
-                        if universe == 0 and ( rawbytes[idx+self.ID] != lastspeed or rawbytes[idx+self.ID-1] != lastpos or rawbytes[idx+self.ID+1] != lastacc ):
+                        first_index=idx+(3*self.ID)-3
+                        #print('first_index='+str(first_index)) 
+                        if universe == 0 and ( rawbytes[first_index] != lastpos ):#or rawbytes[idx+self.ID] != lastspeed or rawbytes[idx+self.ID+1] != lastacc ):
                             #print ("1 %d 5 %d 7 %d 13 %d" % (lastpos , lastspeed, rawbytes[idx+9], rawbytes[idx+10]))
-                            lastpos = rawbytes[idx+self.ID-1]
-                            lastspeed = rawbytes[idx+self.ID]
-                            lastacc = rawbytes[idx+self.ID+1]
+                            lastpos = rawbytes[first_index] # 3
+                            lastspeed = rawbytes[first_index+1] # 4==ID
+                            lastacc = rawbytes[first_index+2] # 5
                             print('func append')
                             self.prQueue.append(lastpos, lastspeed, lastacc )
                             #self.prQueue.append(lambda : self.moveMotor(lastpos, lastspeed, lastacc,self.prQueue.nextPrPathAddr ))
@@ -385,47 +396,37 @@ class SonicStick():
         #global self.func_list
         #self.func_list.append( lambda : moveMotor( args[0], args[1], args[2], args[3] ) )
         #self.moveMotor( args[0], args[1], args[2], args[3] ) 
-    
+    def start(self): 
+        _thread.start_new_thread(self.motor_command_routine,())
+        _thread.start_new_thread(self.artnet_handler,(self.sock,0))
+        _thread.start_new_thread(self.send_pos,())
+        _thread.start_new_thread(self.save_pos_to_db,())
+        #self.run_Pr1()
+        
     # Pop motor command and run
     def motor_command_routine(self):
         while True:
-            #print('hello')
-            time.sleep(0.01)
-            #if(self.prQueue.queueLock is False):
             
-            if(len(self.prQueue.move_list)>=6):
-                holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x050E,1,1)
-                
-                first_moveData=self.prQueue.move_list[0]
-                last_moveData=self.prQueue.move_list[5]
-                if(holdingRegisters[0]==
-                for i in range(6):
-                    self.queue_mutex.acquire()
-                    moveData=self.prQueue.move_list.pop(0)
-                    self.queue_mutex.release()
-                    # PrPos, PrSpeed, PrAcc,self.nextPrPathAddr,self.nextPrNum
-                    self.moveMotor(moveData[0],moveData[1],moveData[2],moveData[3])
-                if(first_moveData[4]-1==0):
-                    prNum=60
-                else
-                    prNum=first_moveData[4]-1
-                self.connectPr(prNum)
-                self.cutPr(last_moveData[4])
-                
-                
-                    #time.sleep(0.01)
-            # for func in self.prQueue.move_list:
-            #     func()
-            #     self.prQueue.move_list.pop(0)
-            #     #time.sleep(0.25)
-            # #time.sleep(0.001)
+            #if(self.prQueue.queueLock is False):
+            if(len(self.prQueue.move_list)>0):
+                holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x050E, 1,1) # Which Pr number is running
+                moveData=self.prQueue.move_list[0]
+                #print('current Pr:'+str(holdingRegisters[0]))
+                if(moveData[4]==holdingRegisters[0]):
+                    print('------pass------')
+                    continue
+                #prQueue.queue_mutex.acquire()
+                moveData=self.prQueue.move_list.pop(0)
+                #prQueue.queue_mutex.release()
+                self.moveMotor(moveData[0],moveData[1],moveData[2],moveData[3],moveData[4])
+            time.sleep(0.01)
     def test(self):
         print('test')
-        holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0520, 2,1)
-        doubeVal=ConvertRegistersToDouble(holdingRegisters)
-        print('pos=',ctypes.c_long(doubeVal).value)
-        holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0002, 2,1)
-        print('alarm=',ConvertRegistersToDouble(holdingRegisters))
+        # holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0520, 2,1)
+        # doubeVal=ConvertRegistersToDouble(holdingRegisters)
+        # print('pos=',ctypes.c_long(doubeVal).value)
+        # holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0002, 2,1)
+        # print('alarm=',ConvertRegistersToDouble(holdingRegisters))
         #val=0x00000023
         #self.modbusClient.WriteMultipleRegisters(0x0702, [val & 0xFFFF, val >> 16],1)
         # _thread.start_new_thread(self.get_Pr_data,())
@@ -437,6 +438,41 @@ class SonicStick():
         # time.sleep(0.25)
         # self.modbusClient.WriteSingleRegister(0x050E, 1, 1)
         # time.sleep(0.25)
+        self.modbusClient.WriteSingleRegister(0x050E, 0,1) # Pr0 home
+        time.sleep(0.025)
+        #self.modbusClient.readmore(32)
+        while True:
+            holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0002, 2,1) # read alarm
+            alarm=ConvertRegistersToDouble(holdingRegisters)
+            holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x005C, 2,1) # read home state
+            motorState=ConvertRegistersToDouble(holdingRegisters)
+            homeState= (motorState & 256) == 256
+            if alarm==0x285 or alarm==0x283:
+                print('touch soft endstop')
+                self.modbusClient.WriteSingleRegister(0x030C, 0xE0, 1) # Enable manual DI setting
+                self.modbusClient.WriteSingleRegister(0x040E, 0xE1, 1) # Manual touch endstop
+                self.modbusClient.WriteSingleRegister(0x030C, 0x00, 1) # Disable manual DI setting
+                self.set_max_PUU(2147483647,-2147483648)
+                break
+        time.sleep(5)
+        print('pos='+str(self.read_current_pos()))
+    def jog(self,upOrdown,rpm=250):
+        # Joggggggg
+        self.modbusClient.WriteSingleRegister(0x040A, rpm, 1) # jog rpm
+        if upOrdown=='D':
+            self.modbusClient.WriteSingleRegister(0x040A, 4999, 1) # jgo down 4999
+        else:
+            self.modbusClient.WriteSingleRegister(0x040A, 4998, 1) # jgo down 4999
+        #self.modbusClient.WriteSingleRegister(0x040A, 0, 1)
+        while(True):
+            try:
+                print('jogging')
+            except:
+                self.modbusClient.WriteSingleRegister(0x040A, 0, 1)
+                print('stop jogging')
+                break
+            
+
     def read_current_pos(self):
         try:
             holdingRegisters = self.modbusClient.ReadHoldingRegisters(0x0520, 2,1)
@@ -444,7 +480,7 @@ class SonicStick():
             return ctypes.c_long(doubeVal).value
         except Exception,err:
             print('read_current_pos err:')
-            traceback.print_exc()
+            traceback.print_exc() 
             return None
     def get_Pr_data(self):
         while True:
@@ -455,7 +491,7 @@ class SonicStick():
         self.modbusClient.WriteSingleRegister(0x050E, 1, 1)
     def settings(self): # Pr
         print('Prs configuration')
-        val=0x00000023
+        val=0x00000032
         start_addr=0x0604
         for i in range(49):
             self.modbusClient.WriteMultipleRegisters(start_addr, [val & 0xFFFF, val >> 16],1) # Define Pr1~Pr49
@@ -466,30 +502,14 @@ class SonicStick():
             self.modbusClient.WriteMultipleRegisters(start_addr, [val & 0xFFFF, val >> 16],1) # Define Pr50~Pr61
             self.modbusClient.WriteMultipleRegisters(start_addr+2, [0,0],1) # Path
             start_addr=start_addr+4
-    def connectPr(self,num):
-        self.modbusClient.WriteMultipleRegisters(start_addr, [val & 0xFFFF, val >> 16],1)
-    def cutPr(self,num):
-        self.modbusClient.WriteMultipleRegisters(start_addr, [val & 0xFFFF, val >> 16],1)
-    def start(self): 
-        _thread.start_new_thread(self.motor_command_routine,())
-        _thread.start_new_thread(self.artnet_handler,(self.sock,0))
-        _thread.start_new_thread(self.send_pos,())
-        _thread.start_new_thread(self.save_pos_to_db,())
-        self.run_Pr1()
-        try:
-            while True:
-                time.sleep(0.1)
-                pass
-        except (KeyboardInterrupt, SystemExit):
-            print('stop it')
-            self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
+        self.modbusClient.WriteSingleRegister(0x0172, 60,1) # Torque 60%
+        self.modbusClient.WriteSingleRegister(0x023C, 5,1) # Disable EEPROM
+        
 class PrQueue():
     def __init__(self):
         #self.queueLock=False
         self.queue_mutex = threading.Lock()
         self.move_list=[]
-        self.PrNum_list=[]
-        self.currentPrNum=0 
         self.nextPrNum=1
         self.nextPrPathAddr=0x0606
         self.nextPrSettingAddr=0x0604
@@ -500,16 +520,22 @@ class PrQueue():
         self.queue_mutex.release()
         #self.PrNum_list.append( self.nextPrNum )
         print('append num='+str(self.nextPrNum))
-        self.currentPrNum=self.currentPrNum+1
         self.nextPrNum=self.nextPrNum+1
-        if self.nextPrNum==61:
+        if self.nextPrNum==4:
             self.nextPrNum=1
         if(49>self.nextPrNum>0):
             self.nextPrPathAddr = 0x0606+(self.nextPrNum-1)*4
             self.nextPrSettingAddr=self.nextPrPathAddr-2
         else:
             self.nextPrPathAddr = 0x0702+(self.nextPrNum-49)*4
-            self.nextPrSettingAddr=self.nextPrPathAddr-2       
+            self.nextPrSettingAddr=self.nextPrPathAddr-2
+    def reset(self):
+        self.queue_mutex.acquire()
+        self.nextPrNum=1
+        self.nextPrPathAddr=0x0606
+        self.nextPrSettingAddr=0x0604
+        self.move_list[:] = []
+        self.queue_mutex.release()
         #self.queueLock=False
     # def getPrPathAddr(self,nextPrNum):
     #     if(59>nextPrNum>0):
@@ -520,21 +546,76 @@ if __name__ == '__main__':
     # Takes argument
     parser = argparse.ArgumentParser()
     parser.add_argument("--T", default="R")
+    parser.add_argument("--R", default=250)
     args = parser.parse_args()
     bigStick=SonicStick()
-    if args.T=='W': # Write current position to DB
-        bigStick.save_pos_to_db_once()
-        bigStick.DbObj.print_data()
-    elif args.T=='T': # test
+    if args.T=='T': # test
         bigStick.safetyCheck()
         bigStick.settings()
+        _thread.start_new_thread(bigStick.sendStatus,())
         bigStick.home()
-        bigStick.start() # Running forever 
-        #bigStick.test()
+        time.sleep(5) 
+        bigStick.start() # Running forever  
+        #bigStick.test() 
         #embed()
+    elif args.T=='Z':
+        print('start embed')
+        holdingRegisters = bigStick.modbusClient.ReadHoldingRegisters(0x0002, 2,1) # read alarm
+        embed()
+        bigStick.modbusClient.WriteSingleRegister(0x0002, 0, 1) # clear alarm
+    elif args.T=='U': # test
+        bigStick.jog('U',int(args.R))
+    elif args.T=='D': # test
+        bigStick.jog('D',int(args.R))
+    elif args.T=='R':
+        bigStick.set_max_PUU(2147483647,-2147483648)
+        bigStick.save_pos_to_db_once(2147483647)
+        bigStick.DbObj.print_data()
+    elif args.T=='A':
+        for i in range(16):
+            bigStick.set_acc(i,500*(16-i))
+        bigStick.set_acc(0,12000)
+        bigStick.set_acc(1,10000)
+        time.sleep(3)
+    elif args.T=='S':
+        bigStick.set_speed(0,10)
+        bigStick.set_speed(1,50)
+        bigStick.set_speed(2,200) 
+        bigStick.set_speed(3,300)
+        bigStick.set_speed(4,400)
+        bigStick.set_speed(5,500)
+        bigStick.set_speed(6,600)
+        bigStick.set_speed(7,700)
+        bigStick.set_speed(8,800)
+        bigStick.set_speed(9,900)
+        bigStick.set_speed(10,1000)
+        bigStick.set_speed(11,1100)
+        bigStick.set_speed(12,1200)
+        bigStick.set_speed(13,1300)
+        bigStick.set_speed(14,1400)
+        bigStick.set_speed(15,1500)
+        time.sleep(3)
     else:
         # will be in start
         #bigStick.settings()
         #bigStick.start() # Running forever
         pass
+    try:
+        while True:
+            now=time.time()
+            # if(now-self.last_time>24.0):
+            #     self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
+            #     self.stopped=True
+            #     self.prQueue.reset()
+            #     self.last_time=time.time()
+            #     for i in range(10):
+            #         print('stop cause by timeout')
+            time.sleep(0.1)
+            pass
+    except (KeyboardInterrupt, SystemExit):
+        print('stop it')
+        self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
+
+
+
 
