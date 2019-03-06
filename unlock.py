@@ -1,6 +1,6 @@
 import fcntl
 
-lockfile = '/home/pi/Nangang/fcntl.lock'
+lockfile = '/home/pi/sonicStick/fcntl.lock'
 try:
     f = open(lockfile, 'r')
 except IOError:
