@@ -1,7 +1,7 @@
 #!/usr/bin/python
 from package.modbus.ModbusClient import *
 import os
-import time
+import time,datetime
 import OSC
 import _thread,threading
 import sys, traceback
@@ -12,6 +12,7 @@ import argparse
 import commands
 from package.sqliteModule import *
 import ctypes
+import fcntl
 from IPython import embed
 class SonicStick():
     def __init__(self):
@@ -543,79 +544,97 @@ class PrQueue():
     #     else:
     #         return 0x0702+(nextPrNum-59)*4
 if __name__ == '__main__':
-    # Takes argument
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--T", default="R")
-    parser.add_argument("--R", default=250)
-    args = parser.parse_args()
-    bigStick=SonicStick()
-    if args.T=='T': # test
-        bigStick.safetyCheck()
-        bigStick.settings()
-        _thread.start_new_thread(bigStick.sendStatus,())
-        bigStick.home()
-        time.sleep(5) 
-        bigStick.start() # Running forever  
-        #bigStick.test() 
-        #embed()
-    elif args.T=='Z':
-        print('start embed')
-        holdingRegisters = bigStick.modbusClient.ReadHoldingRegisters(0x0002, 2,1) # read alarm
-        embed()
-        bigStick.modbusClient.WriteSingleRegister(0x0002, 0, 1) # clear alarm
-    elif args.T=='U': # test
-        bigStick.jog('U',int(args.R))
-    elif args.T=='D': # test
-        bigStick.jog('D',int(args.R))
-    elif args.T=='R':
-        bigStick.set_max_PUU(2147483647,-2147483648)
-        bigStick.save_pos_to_db_once(2147483647)
-        bigStick.DbObj.print_data()
-    elif args.T=='A':
-        for i in range(16):
-            bigStick.set_acc(i,500*(16-i))
-        bigStick.set_acc(0,12000)
-        bigStick.set_acc(1,10000)
-        time.sleep(3)
-    elif args.T=='S':
-        bigStick.set_speed(0,10)
-        bigStick.set_speed(1,50)
-        bigStick.set_speed(2,200) 
-        bigStick.set_speed(3,300)
-        bigStick.set_speed(4,400)
-        bigStick.set_speed(5,500)
-        bigStick.set_speed(6,600)
-        bigStick.set_speed(7,700)
-        bigStick.set_speed(8,800)
-        bigStick.set_speed(9,900)
-        bigStick.set_speed(10,1000)
-        bigStick.set_speed(11,1100)
-        bigStick.set_speed(12,1200)
-        bigStick.set_speed(13,1300)
-        bigStick.set_speed(14,1400)
-        bigStick.set_speed(15,1500)
-        time.sleep(3)
-    else:
-        # will be in start
-        #bigStick.settings()
-        #bigStick.start() # Running forever
-        pass
-    try:
-        while True:
-            now=time.time()
-            # if(now-self.last_time>24.0):
-            #     self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
-            #     self.stopped=True
-            #     self.prQueue.reset()
-            #     self.last_time=time.time()
-            #     for i in range(10):
-            #         print('stop cause by timeout')
-            time.sleep(0.1)
-            pass
-    except (KeyboardInterrupt, SystemExit):
-        print('stop it')
-        self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
+    print('Program started from')
+    print(datetime.datetime.now())
 
+    lockfile = '/home/pi/SonicStick/fcntl.lock'
+    locked=False
+    try:
+        f = open(lockfile, 'r')
+    except IOError:
+        f = open(lockfile, 'wb')
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        unlock=True
+    except:
+        print('locked')
+
+    if unlock:
+        # Takes argument
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--T", default="R")
+        parser.add_argument("--R", default=250)
+        args = parser.parse_args()
+
+        bigStick=SonicStick()
+        if args.T=='T': # test
+            bigStick.safetyCheck()
+            bigStick.settings()
+            _thread.start_new_thread(bigStick.sendStatus,())
+            bigStick.home()
+            time.sleep(5) 
+            bigStick.start() # Running forever  
+            #bigStick.test() 
+            #embed()
+        elif args.T=='Z':
+            print('start embed')
+            holdingRegisters = bigStick.modbusClient.ReadHoldingRegisters(0x0002, 2,1) # read alarm
+            embed()
+            bigStick.modbusClient.WriteSingleRegister(0x0002, 0, 1) # clear alarm
+        elif args.T=='U': # test
+            bigStick.jog('U',int(args.R))
+        elif args.T=='D': # test
+            bigStick.jog('D',int(args.R))
+        elif args.T=='R':
+            bigStick.set_max_PUU(2147483647,-2147483648)
+            bigStick.save_pos_to_db_once(2147483647)
+            bigStick.DbObj.print_data()
+        elif args.T=='A':
+            for i in range(16):
+                bigStick.set_acc(i,500*(16-i))
+            bigStick.set_acc(0,12000)
+            bigStick.set_acc(1,10000)
+            time.sleep(3)
+        elif args.T=='S':
+            bigStick.set_speed(0,10)
+            bigStick.set_speed(1,50)
+            bigStick.set_speed(2,200) 
+            bigStick.set_speed(3,300)
+            bigStick.set_speed(4,400)
+            bigStick.set_speed(5,500)
+            bigStick.set_speed(6,600)
+            bigStick.set_speed(7,700)
+            bigStick.set_speed(8,800)
+            bigStick.set_speed(9,900)
+            bigStick.set_speed(10,1000)
+            bigStick.set_speed(11,1100)
+            bigStick.set_speed(12,1200)
+            bigStick.set_speed(13,1300)
+            bigStick.set_speed(14,1400)
+            bigStick.set_speed(15,1500)
+            time.sleep(3)
+        else:
+            # will be in start
+            #bigStick.settings()
+            #bigStick.start() # Running forever
+            pass
+        try:
+            while True:
+                now=time.time()
+                # if(now-self.last_time>24.0):
+                #     self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
+                #     self.stopped=True
+                #     self.prQueue.reset()
+                #     self.last_time=time.time()
+                #     for i in range(10):
+                #         print('stop cause by timeout')
+                time.sleep(0.1)
+                pass
+        except (KeyboardInterrupt, SystemExit):
+            print('stop it')
+            self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
+    else:
+        print('exit')
 
 
 
