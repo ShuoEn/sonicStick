@@ -1,0 +1,23 @@
+import time
+from pyartnet import ArtNetNode, DmxChannel, DmxUniverse, output_correction
+node = ArtNetNode('192.168.11.4')
+node.start()
+
+universe = node.add_universe(0)
+channel  = universe.add_channel(4,3)
+channel.add_fade([255,0,0], 1000)
+channel.add_fade([200,0,0], 1000)
+time.sleep(0.5)
+channel.add_fade([150,33,0], 1000)
+time.sleep(0.5)
+channel.add_fade([100,65,0], 1000)
+time.sleep(0.5)
+channel.add_fade([50,98,0], 1000)
+time.sleep(0.5)
+channel.add_fade([100,132,0], 1000)
+time.sleep(0.5)
+channel.add_fade([150,152,0], 1000)
+time.sleep(0.5)
+channel.add_fade([200,0,0], 1000)
+time.sleep(0.5)
+channel.add_fade([255,0,0], 1000)
