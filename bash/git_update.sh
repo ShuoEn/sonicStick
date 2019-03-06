@@ -1,3 +1,3 @@
 #!/bin/bash
 cd /home/pi/sonicStick
-git pull > /home/pi/SonicStick/logs/git_log 2>&1
+git pull > /home/pi/SonicStick/log/git_log 2>&1
