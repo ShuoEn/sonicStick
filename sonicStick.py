@@ -1,4 +1,6 @@
 #!/usr/bin/python
+# -*- coding: utf-8 -*-
+
 from package.modbus.ModbusClient import *
 import os
 import time,datetime
