@@ -11,6 +11,7 @@ import argparse
 import commands
 from package.sqliteModule import *
 import ctypes
+
 #from IPython import embed
 class SonicStick():
     def __init__(self):

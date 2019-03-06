@@ -101,7 +101,7 @@ class SonicStick():
 
         elif args[0]=='controled': # stop, clear buffer
             self.status['mode']=args[0]
-            
+            stop_callback()
         else:
 
 
@@ -117,7 +117,7 @@ class SonicStick():
         #print "stop", args[0]
         self.modbusClient.WriteSingleRegister(0x050E, 1000, 1)
         prQueue.reset()
-        
+
     #thread mutex? have done in ModbusClient module
     def send_pos(self):
         partner = OSC.OSCClient()
